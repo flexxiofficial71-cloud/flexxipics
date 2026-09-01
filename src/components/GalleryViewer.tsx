@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { GalleryFolder, MediaItem } from '../types';
 import { PhotographerCreditBanner } from './PhotographerBadge';
+import { safeFetchJson, LocalVaultStore } from '../services/vaultApi';
 
 interface GalleryViewerProps {
   folder: GalleryFolder;
@@ -66,17 +67,22 @@ export const GalleryViewer: React.FC<GalleryViewerProps> = ({
     setError(null);
     try {
       const url = `/api/folders/${folder.id}/media${token ? `?token=${token}` : ''}`;
-      const res = await fetch(url, {
+      const response = await safeFetchJson<{ media: MediaItem[]; error?: string }>(url, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
-      const data = await res.json();
-      if (res.ok) {
-        setMediaList(data.media || []);
+
+      if (response.success && response.data?.media) {
+        setMediaList(response.data.media);
+      } else if (response.status === 401 || response.status === 403) {
+        setError(response.error || response.data?.error || 'Access restricted. Please unlock this vault.');
       } else {
-        setError(data.error || 'Failed to access media in this vault.');
+        // Fallback to local storage media items for this folder
+        const localMedia = LocalVaultStore.getMedia().filter(m => m.folderId === folder.id);
+        setMediaList(localMedia);
       }
     } catch (err) {
-      setError('Network error fetching folder items.');
+      const localMedia = LocalVaultStore.getMedia().filter(m => m.folderId === folder.id);
+      setMediaList(localMedia);
     } finally {
       setIsLoading(false);
     }

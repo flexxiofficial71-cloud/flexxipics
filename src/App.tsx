@@ -9,6 +9,7 @@ import { AdminLoginModal } from './components/AdminLoginModal';
 import { AdminDashboard } from './components/AdminDashboard';
 import { GalleryFolder, Category, TelegramSettings } from './types';
 import { Lock, Shield, Sparkles, Cloud, CheckSquare, X, Copy, Heart, ShieldCheck } from 'lucide-react';
+import { safeFetchJson, LocalVaultStore } from './services/vaultApi';
 
 export function App() {
   const [currentView, setCurrentView] = useState<'home' | 'folder-view' | 'admin'>('home');
@@ -116,16 +117,36 @@ export function App() {
   const loadInitialData = async () => {
     try {
       const [fRes, cRes, tgRes] = await Promise.all([
-        fetch('/api/folders'),
-        fetch('/api/categories'),
-        fetch('/api/telegram/settings'),
+        safeFetchJson<GalleryFolder[]>('/api/folders'),
+        safeFetchJson<Category[]>('/api/categories'),
+        safeFetchJson<TelegramSettings>('/api/telegram/settings'),
       ]);
 
-      if (fRes.ok) setFolders(await fRes.json());
-      if (cRes.ok) setCategories(await cRes.json());
-      if (tgRes.ok) setTelegramSettings(await tgRes.json());
+      if (fRes.success && Array.isArray(fRes.data)) {
+        setFolders(fRes.data);
+        LocalVaultStore.saveFolders(fRes.data);
+      } else {
+        setFolders(LocalVaultStore.getFolders());
+      }
+
+      if (cRes.success && Array.isArray(cRes.data)) {
+        setCategories(cRes.data);
+        LocalVaultStore.saveCategories(cRes.data);
+      } else {
+        setCategories(LocalVaultStore.getCategories());
+      }
+
+      if (tgRes.success && tgRes.data) {
+        setTelegramSettings(tgRes.data);
+        LocalVaultStore.saveTelegramSettings(tgRes.data);
+      } else {
+        setTelegramSettings(LocalVaultStore.getTelegramSettings());
+      }
     } catch (err) {
       console.error('Failed to load initial data:', err);
+      setFolders(LocalVaultStore.getFolders());
+      setCategories(LocalVaultStore.getCategories());
+      setTelegramSettings(LocalVaultStore.getTelegramSettings());
     } finally {
       setIsLoading(false);
     }
