@@ -452,7 +452,7 @@ async function startServer() {
   });
 
   // Multi-upload media endpoint
-  app.post('/api/media/upload', upload.array('files', 20), async (req, res) => {
+  app.post('/api/media/upload', upload.array('files', 20) as any, async (req, res) => {
     const files = req.files as Express.Multer.File[];
     const folderId = req.body.folderId;
     const useAI = req.body.useAI === 'true' || req.body.useAI === true;
