@@ -13,8 +13,8 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
   onClose,
   onLoginSuccess,
 }) => {
-  const [username, setUsername] = useState('admin');
-  const [password, setPassword] = useState('AdminVault2026');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
@@ -185,14 +185,6 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
             )}
           </button>
         </form>
-
-        {/* Demo Credentials Reminder */}
-        <div className="mt-5 rounded-xl border border-[#D4AF37]/30 bg-[#FAF8F2] p-3 text-center text-xs text-neutral-500">
-          <span className="font-semibold text-neutral-700">Demo Master Account:</span>
-          <div className="mt-0.5 font-mono text-[11px] text-[#997A15]">
-            User: <b>admin</b> | Pass: <b>AdminVault2026</b>
-          </div>
-        </div>
       </div>
     </div>
   );
