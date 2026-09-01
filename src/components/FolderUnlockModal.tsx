@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Lock, Unlock, Eye, EyeOff, X, ShieldAlert, KeyRound, Sparkles } from 'lucide-react';
 import { GalleryFolder } from '../types';
-import { safeFetchJson } from '../services/vaultApi';
+import { safeFetchJson, LocalVaultStore } from '../services/vaultApi';
+import { TelegramClient } from '../services/telegramClient';
 
 interface FolderUnlockModalProps {
   folder: GalleryFolder | null;
@@ -74,8 +75,32 @@ export const FolderUnlockModal: React.FC<FolderUnlockModalProps> = ({
         body: JSON.stringify({ password: password.trim() }),
       });
 
+      const handleSuccess = (token: string, targetFolder: GalleryFolder) => {
+        // Trigger telegram alert if configured
+        try {
+          const tg = LocalVaultStore.getTelegramSettings();
+          if (tg.isConnected && (tg.sendAccessAlerts ?? true) && tg.botToken && tg.channelId) {
+            const timeStr = new Date().toLocaleString();
+            const msg = `🔓 <b>Vault Access Notice</b>\n\n` +
+              `📁 <b>Vault:</b> ${targetFolder.name}\n` +
+              `🏷️ <b>Category:</b> ${targetFolder.category}\n` +
+              `⏰ <b>Timestamp:</b> ${timeStr}\n` +
+              `🛡️ <b>Status:</b> Authorized Client Unlock`;
+            TelegramClient.sendMessage(tg.botToken, tg.channelId, msg).catch(() => {});
+          }
+          LocalVaultStore.addAuditLog({
+            action: 'Vault Unlocked',
+            details: `Client unlocked vault: "${targetFolder.name}"`,
+            ip: '127.0.0.1',
+            status: 'success',
+            category: 'auth',
+          });
+        } catch {}
+        onUnlockSuccess(token, targetFolder);
+      };
+
       if (response.success && response.data?.token) {
-        onUnlockSuccess(response.data.token, response.data.folder || folder);
+        handleSuccess(response.data.token, response.data.folder || folder);
         return;
       }
 
@@ -96,7 +121,7 @@ export const FolderUnlockModal: React.FC<FolderUnlockModalProps> = ({
         samplePassword === password.trim()
       ) {
         const dummyToken = `pv_token_${Date.now()}_${Math.random().toString(36).substr(2, 8)}`;
-        onUnlockSuccess(dummyToken, folder);
+        handleSuccess(dummyToken, folder);
         return;
       }
 

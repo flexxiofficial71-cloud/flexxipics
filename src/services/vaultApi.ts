@@ -197,6 +197,38 @@ export class LocalVaultStore {
     } catch {}
   }
 
+  static getAuthSession(): { token: string; user?: UserAccount; loggedInAt?: string } | null {
+    try {
+      const token = localStorage.getItem(STORAGE_KEYS.AUTH);
+      const rawUser = localStorage.getItem(STORAGE_KEYS.AUTH_USER);
+      if (token && token.trim().length > 0) {
+        const user = rawUser ? JSON.parse(rawUser) : undefined;
+        return { token, user };
+      }
+    } catch {}
+    return null;
+  }
+
+  static saveAuthSession(token: string, user?: UserAccount) {
+    try {
+      if (token) {
+        localStorage.setItem(STORAGE_KEYS.AUTH, token);
+      }
+      if (user) {
+        localStorage.setItem(STORAGE_KEYS.AUTH_USER, JSON.stringify(user));
+      }
+    } catch (e) {
+      console.warn('Failed to save auth session:', e);
+    }
+  }
+
+  static clearAuthSession() {
+    try {
+      localStorage.removeItem(STORAGE_KEYS.AUTH);
+      localStorage.removeItem(STORAGE_KEYS.AUTH_USER);
+    } catch {}
+  }
+
   static getStats(): AnalyticsStats {
     try {
       const raw = localStorage.getItem(STORAGE_KEYS.STATS);

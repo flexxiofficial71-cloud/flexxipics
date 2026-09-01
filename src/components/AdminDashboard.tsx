@@ -37,11 +37,13 @@ import {
   SlidersHorizontal,
   Cloud,
   Save,
+  ShieldAlert,
   Infinity,
   Globe,
   Camera,
   AtSign,
   ExternalLink,
+  LogOut,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -75,6 +77,7 @@ import {
   renderPlatformIcon,
 } from './PhotographerBadge';
 import { safeFetchJson, LocalVaultStore } from '../services/vaultApi';
+import { TelegramClient, normalizeTelegramChatId } from '../services/telegramClient';
 
 export const PERMISSION_OPTIONS: { key: PermissionKey; label: string; description: string; category: string }[] = [
   {
@@ -135,10 +138,11 @@ export const PERMISSION_OPTIONS: { key: PermissionKey; label: string; descriptio
 
 interface AdminDashboardProps {
   onBackToHome: () => void;
+  onLogout?: () => void;
   adminToken: string;
 }
 
-export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, adminToken }) => {
+export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, onLogout, adminToken }) => {
   const [activeTab, setActiveTab] = useState<
     'overview' | 'folders' | 'upload' | 'categories' | 'selections' | 'users' | 'telegram' | 'audit'
   >('overview');
@@ -226,9 +230,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, ad
   const [tgBotToken, setTgBotToken] = useState('');
   const [tgChannelId, setTgChannelId] = useState('');
   const [tgTesting, setTgTesting] = useState(false);
+  const [isSendingAlert, setIsSendingAlert] = useState(false);
   const [isSavingTg, setIsSavingTg] = useState(false);
   const [tgSavedNotice, setTgSavedNotice] = useState(false);
-  const [tgTestResult, setTgTestResult] = useState<{ success?: boolean; message?: string; error?: string } | null>(null);
+  const [tgTestResult, setTgTestResult] = useState<{ success?: boolean; message?: string; error?: string; helpTip?: string } | null>(null);
 
   // New Category Form State
   const [newCatName, setNewCatName] = useState('');
@@ -579,42 +584,77 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, ad
 
   // Test Telegram Connection and persist credentials
   const handleTestTelegram = async () => {
+    const token = tgBotToken.trim();
+    if (!token) {
+      setTgTestResult({
+        success: false,
+        error: 'Please enter your Telegram Bot Token.',
+        helpTip: 'Open @BotFather on Telegram, use /newbot or /mybots, and copy your API Token.',
+      });
+      return;
+    }
+
     setTgTesting(true);
     setTgTestResult(null);
     try {
-      const response = await safeFetchJson<{ success: boolean; isSimulated?: boolean; username?: string; botName?: string; error?: string }>('/api/telegram/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ botToken: tgBotToken, channelId: tgChannelId }),
-      });
+      const verification = await TelegramClient.verifyBotToken(token);
 
-      if (response.success && response.data?.success) {
+      if (verification.success) {
+        const cleanChannel = normalizeTelegramChatId(tgChannelId);
+        const updatedTg: TelegramSettings = {
+          botToken: token,
+          channelId: cleanChannel || tgChannelId,
+          isConnected: true,
+          botUsername: verification.username,
+          lastTestedAt: new Date().toISOString(),
+          statusMessage: `Connected to @${verification.username} (${verification.botName || 'Bot'})`,
+          sendUploadAlerts: telegramSettings.sendUploadAlerts ?? true,
+          sendAccessAlerts: telegramSettings.sendAccessAlerts ?? true,
+        };
+
+        setTelegramSettings(updatedTg);
+        LocalVaultStore.saveTelegramSettings(updatedTg);
+        if (cleanChannel && cleanChannel !== tgChannelId) {
+          setTgChannelId(cleanChannel);
+        }
+
+        // Also background save to server
+        safeFetchJson('/api/telegram/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updatedTg),
+        }).catch(() => {});
+
+        LocalVaultStore.addAuditLog({
+          action: 'Telegram Bot Linked',
+          details: `Verified Telegram Bot @${verification.username} (${verification.botName})`,
+          ip: '127.0.0.1',
+          status: 'success',
+          category: 'telegram',
+        });
+
         setTgTestResult({
           success: true,
-          message: response.data.isSimulated
-            ? 'Running in Simulated Sovereign Cloud Node mode.'
-            : `Successfully verified & persisted @${response.data.username} (${response.data.botName})!`,
+          message: `Successfully connected & verified Telegram Bot: @${verification.username} (${verification.botName || 'Bot'})!`,
+          helpTip: cleanChannel
+            ? 'Credentials validated! You can now click "Dispatch Live Test Alert" below to receive a message.'
+            : 'Enter your Target Channel / Chat ID below and click "Send Test Message" to receive test alerts.',
         });
         setTgSavedNotice(true);
-        setTimeout(() => setTgSavedNotice(false), 5000);
+        setTimeout(() => setTgSavedNotice(false), 6000);
         fetchData();
       } else {
-        // Fallback local verification
-        if (tgBotToken.trim()) {
-          setTgTestResult({
-            success: true,
-            message: 'Telegram parameters verified & stored securely in local vault configuration.',
-          });
-          setTgSavedNotice(true);
-          setTimeout(() => setTgSavedNotice(false), 5000);
-        } else {
-          setTgTestResult({ success: false, error: response.error || response.data?.error || 'Please enter a valid Bot Token.' });
-        }
+        setTgTestResult({
+          success: false,
+          error: verification.error || 'Failed to authenticate Bot Token with Telegram API.',
+          helpTip: verification.helpTip,
+        });
       }
-    } catch (err) {
+    } catch (err: any) {
       setTgTestResult({
-        success: true,
-        message: 'Telegram credentials recorded in active vault storage.',
+        success: false,
+        error: `Connection error: ${err?.message || 'Could not reach Telegram API'}`,
+        helpTip: 'Verify your internet connectivity and ensure api.telegram.org is reachable.',
       });
     } finally {
       setTgTesting(false);
@@ -625,38 +665,42 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, ad
   const handleSaveTelegramSettings = async () => {
     setIsSavingTg(true);
     setTgSavedNotice(false);
+    const token = tgBotToken.trim();
+    const cleanChannel = normalizeTelegramChatId(tgChannelId);
+
     const newSettings: TelegramSettings = {
-      botToken: tgBotToken,
-      channelId: tgChannelId,
-      isConnected: Boolean(tgBotToken && tgBotToken.trim()),
-      sendUploadAlerts: telegramSettings.sendUploadAlerts,
-      sendAccessAlerts: telegramSettings.sendAccessAlerts,
+      botToken: token,
+      channelId: cleanChannel || tgChannelId,
+      isConnected: Boolean(token),
+      botUsername: telegramSettings.botUsername,
+      sendUploadAlerts: telegramSettings.sendUploadAlerts ?? true,
+      sendAccessAlerts: telegramSettings.sendAccessAlerts ?? true,
+      statusMessage: token ? (telegramSettings.botUsername ? `Connected to @${telegramSettings.botUsername}` : 'Configured') : 'Offline',
+      lastTestedAt: new Date().toISOString(),
     };
 
     try {
-      const response = await safeFetchJson<TelegramSettings>('/api/telegram/settings', {
+      setTelegramSettings(newSettings);
+      LocalVaultStore.saveTelegramSettings(newSettings);
+      if (cleanChannel) setTgChannelId(cleanChannel);
+
+      await safeFetchJson('/api/telegram/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          botToken: tgBotToken,
-          channelId: tgChannelId,
-          isConnected: Boolean(tgBotToken && tgBotToken.trim()),
-          statusMessage: tgBotToken ? 'Connected & Persistent' : 'Simulated Node Active',
-        }),
+        body: JSON.stringify(newSettings),
       });
 
-      if (response.success && response.data) {
-        setTelegramSettings(response.data);
-        LocalVaultStore.saveTelegramSettings(response.data);
-      } else {
-        setTelegramSettings(newSettings);
-        LocalVaultStore.saveTelegramSettings(newSettings);
-      }
+      LocalVaultStore.addAuditLog({
+        action: 'Update Telegram Config',
+        details: `Saved Bot configuration for channel "${cleanChannel || 'N/A'}"`,
+        ip: '127.0.0.1',
+        status: 'success',
+        category: 'telegram',
+      });
+
       setTgSavedNotice(true);
       setTimeout(() => setTgSavedNotice(false), 6000);
     } catch {
-      setTelegramSettings(newSettings);
-      LocalVaultStore.saveTelegramSettings(newSettings);
       setTgSavedNotice(true);
       setTimeout(() => setTgSavedNotice(false), 6000);
     } finally {
@@ -666,19 +710,62 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, ad
 
   // Send real live alert to Telegram
   const handleSendTelegramTestAlert = async () => {
-    try {
-      const response = await safeFetchJson<{ success: boolean; error?: string }>('/api/telegram/send-test-alert', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ botToken: tgBotToken, channelId: tgChannelId }),
+    const token = tgBotToken.trim();
+    const targetChat = normalizeTelegramChatId(tgChannelId);
+
+    if (!token) {
+      setTgTestResult({
+        success: false,
+        error: 'Please provide a Telegram Bot Token first.',
+        helpTip: 'Enter the Bot Token above from @BotFather and verify connection.',
       });
-      if (response.success && response.data?.success) {
-        alert('Test notification broadcasted to Telegram channel!');
+      return;
+    }
+
+    if (!targetChat) {
+      setTgTestResult({
+        success: false,
+        error: 'Please enter a Target Channel / Chat ID.',
+        helpTip: 'Enter a public channel username like @MyChannel, a numeric Channel/Group ID (e.g. -1001234567890), or your user ID (ensure you clicked /start with the bot first).',
+      });
+      return;
+    }
+
+    setIsSendingAlert(true);
+    setTgTestResult(null);
+
+    try {
+      const message = TelegramClient.generateTestAlertMessage(targetChat, telegramSettings.botUsername);
+      const result = await TelegramClient.sendMessage(token, targetChat, message);
+
+      if (result.success) {
+        setTgTestResult({
+          success: true,
+          message: `✨ Test alert delivered successfully to ${targetChat}! Check your Telegram.`,
+          helpTip: 'Real-time synchronization active. You will now get notified on media uploads and client gallery unlocks.',
+        });
+        LocalVaultStore.addAuditLog({
+          action: 'Telegram Test Ping',
+          details: `Sent live alert to destination: ${targetChat}`,
+          ip: '127.0.0.1',
+          status: 'success',
+          category: 'telegram',
+        });
       } else {
-        alert('Notification signal recorded successfully in vault logs.');
+        setTgTestResult({
+          success: false,
+          error: result.error || 'Telegram rejected the message request.',
+          helpTip: result.helpTip,
+        });
       }
-    } catch {
-      alert('Notification signal recorded in vault security logs.');
+    } catch (err: any) {
+      setTgTestResult({
+        success: false,
+        error: `Failed to dispatch alert: ${err?.message || 'Network error'}`,
+        helpTip: 'Check your internet connection and verify that the bot is an Administrator in the target channel.',
+      });
+    } finally {
+      setIsSendingAlert(false);
     }
   };
 
@@ -935,15 +1022,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, ad
           </nav>
         </div>
 
-        {/* Footer / Back to Vault */}
-        <div className="border-t border-[#D4AF37]/20 pt-4">
+        {/* Footer / Back to Vault & Logout */}
+        <div className="border-t border-[#D4AF37]/20 pt-4 space-y-2">
           <button
             onClick={onBackToHome}
-            className="flex w-full items-center justify-between rounded-xl bg-[#FAF8F2] px-3.5 py-2.5 text-xs font-semibold text-[#1A1A1A] ring-1 ring-[#D4AF37]/30 hover:bg-[#F5F0DF]"
+            className="flex w-full items-center justify-between rounded-xl bg-[#FAF8F2] px-3.5 py-2.5 text-xs font-semibold text-[#1A1A1A] ring-1 ring-[#D4AF37]/30 hover:bg-[#F5F0DF] transition-colors cursor-pointer"
           >
             <span>Exit to Public Explorer</span>
             <ChevronRight className="h-4 w-4 text-[#997A15]" />
           </button>
+
+          {onLogout && (
+            <button
+              onClick={onLogout}
+              className="flex w-full items-center justify-between rounded-xl bg-rose-50/80 px-3.5 py-2.5 text-xs font-semibold text-rose-700 ring-1 ring-rose-200/70 hover:bg-rose-100/80 transition-colors cursor-pointer"
+            >
+              <div className="flex items-center space-x-2">
+                <LogOut className="h-3.5 w-3.5 text-rose-600" />
+                <span>Log Out (লগআউট)</span>
+              </div>
+              <span className="text-[10px] text-rose-400 font-mono">End Session</span>
+            </button>
+          )}
         </div>
       </aside>
 
@@ -1011,10 +1111,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, ad
                 {activeTab !== 'upload' && (
                   <button
                     onClick={() => setActiveTab('upload')}
-                    className="flex items-center space-x-1.5 rounded-xl bg-[#1A1A1A] px-4 py-2.5 text-xs font-semibold text-[#FCF6BA] shadow-sm ring-1 ring-[#D4AF37] hover:bg-neutral-800"
+                    className="flex items-center space-x-1.5 rounded-xl bg-[#1A1A1A] px-4 py-2.5 text-xs font-semibold text-[#FCF6BA] shadow-sm ring-1 ring-[#D4AF37] hover:bg-neutral-800 transition-all cursor-pointer"
                   >
                     <Upload className="h-4 w-4 text-[#D4AF37]" />
                     <span>Upload Media</span>
+                  </button>
+                )}
+
+                {onLogout && (
+                  <button
+                    onClick={onLogout}
+                    title="Log out of admin session"
+                    className="flex items-center space-x-1.5 rounded-xl border border-neutral-300 bg-white px-3.5 py-2.5 text-xs font-semibold text-neutral-700 hover:bg-rose-50 hover:text-rose-700 hover:border-rose-300 transition-colors cursor-pointer"
+                  >
+                    <LogOut className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline">Log Out</span>
                   </button>
                 )}
               </>
@@ -1958,7 +2069,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, ad
         )}
 
         {/* ========================================================================= */}
-        {/* TAB 7: TELEGRAM STORAGE SETTINGS */}
+        {/* TAB 7: TELEGRAM STORAGE & NOTIFICATION SETTINGS */}
         {/* ========================================================================= */}
         {activeTab === 'telegram' && (
           <div className="mt-8 max-w-3xl space-y-6">
@@ -1969,24 +2080,35 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, ad
                     <Cloud className="h-6 w-6 text-[#997A15]" />
                   </div>
                   <div>
-                    <h3 className="font-serif text-lg font-bold text-[#1A1A1A]">Sovereign Cloud Redundancy Engine</h3>
+                    <h3 className="font-serif text-lg font-bold text-[#1A1A1A]">Telegram Cloud & Real-Time Alert Engine</h3>
                     <p className="text-xs text-neutral-500">
-                      Connect enterprise zero-knowledge storage nodes to mirror high-resolution media across distributed cold-storage channels.
+                      টেলিগ্রাম বট এবং চ্যানেল যুক্ত করে রিয়েল-টাইম ক্লায়েন্ট ভল্ট আনলক, ফটো লাইক ও মিডিয়া আপলোডের লাইভ নোটিফিকেশন পান।
                     </p>
                   </div>
                 </div>
                 {telegramSettings?.isConnected && (
                   <span className="hidden sm:inline-flex items-center space-x-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-200">
                     <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                    <span>Credentials Persisted</span>
+                    <span>{telegramSettings.botUsername ? `@${telegramSettings.botUsername}` : 'Connected'}</span>
                   </span>
                 )}
+              </div>
+
+              {/* Instructions Guide */}
+              <div className="mt-5 rounded-xl border border-[#D4AF37]/20 bg-[#FAF8F2] p-4 text-xs text-neutral-600">
+                <p className="font-semibold text-neutral-800 mb-1">কীভাবে সেটআপ করবেন:</p>
+                <ol className="list-decimal pl-4 space-y-1 text-[11px] text-neutral-600">
+                  <li>টেলিগ্রামে <b>@BotFather</b>-এ গিয়ে <code>/newbot</code> দিয়ে একটি নতুন বট বানান এবং <b>API Token</b> টি কপি করে নিচে পেস্ট করুন।</li>
+                  <li>আপনার চ্যানেল বা গ্রুপে বটটিকে <b>Administrator</b> (Post Messages পারমিশন সহ) হিসেবে যুক্ত করুন।</li>
+                  <li>চ্যানেল ইউজারনেম (যেমন <code>@MyChannel</code>) অথবা চ্যাট আইডি দিন এবং <b>"Send Live Test Alert"</b> বাটনে চাপুন।</li>
+                  <li>পার্সোনাল অ্যাকাউন্টে মেসেজ পেতে চাইলে বটে গিয়ে <code>/start</code> চেপে আপনার Telegram User ID দিন।</li>
+                </ol>
               </div>
 
               <div className="mt-6 space-y-4">
                 <div>
                   <label className="block text-[11px] font-semibold text-neutral-700 uppercase tracking-wider mb-1">
-                    Sovereign Node Gateway Key / API Token
+                    Telegram Bot API Token (বট টোকেন)
                   </label>
                   <input
                     type="password"
@@ -1996,67 +2118,85 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, ad
                     className="w-full rounded-xl border border-[#D4AF37]/30 bg-[#FAF8F2] px-4 py-2.5 text-xs text-[#1A1A1A] font-mono focus:border-[#D4AF37] focus:bg-white focus:outline-none"
                   />
                   <p className="mt-1 text-[10px] text-neutral-400">
-                    Save once to persist permanently in the database. You will not need to re-enter this during media uploads.
+                    @BotFather থেকে পাওয়া গোপনীয় বট টোকেন। এটি সুরক্ষিতভাবে এনক্রিপ্ট থাকবে।
                   </p>
                 </div>
 
                 <div>
                   <label className="block text-[11px] font-semibold text-neutral-700 uppercase tracking-wider mb-1">
-                    Target Sovereign Cluster / Data Node Identifier
+                    Target Channel / Chat ID (চ্যানেল বা চ্যাট আইডি)
                   </label>
                   <input
                     type="text"
                     value={tgChannelId}
                     onChange={e => setTgChannelId(e.target.value)}
-                    placeholder="e.g. @EncryptedVaultArchive or -1001234567890"
+                    placeholder="e.g. @MyPhotoVaultChannel or -1001234567890"
                     className="w-full rounded-xl border border-[#D4AF37]/30 bg-[#FAF8F2] px-4 py-2.5 text-xs text-[#1A1A1A] font-mono focus:border-[#D4AF37] focus:bg-white focus:outline-none"
                   />
+                  <p className="mt-1 text-[10px] text-neutral-400">
+                    চ্যানেলের পাবলিক ইউজারনেম (@ সহ) অথবা নিউমেরিক চ্যাট আইডি।
+                  </p>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-3 pt-2">
-                  <button
-                    onClick={handleSaveTelegramSettings}
-                    disabled={isSavingTg}
-                    className="flex items-center space-x-1.5 rounded-xl bg-[#1A1A1A] px-4 py-2.5 text-xs font-semibold text-[#FCF6BA] shadow-sm ring-1 ring-[#D4AF37] hover:bg-neutral-800 disabled:opacity-50 transition-all cursor-pointer"
-                  >
-                    {isSavingTg ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5 text-[#D4AF37]" />}
-                    <span>Save Node Configuration (সংরক্ষণ করুন)</span>
-                  </button>
-
+                <div className="flex flex-wrap items-center gap-3 pt-3">
                   <button
                     onClick={handleTestTelegram}
                     disabled={tgTesting}
                     className="flex items-center space-x-1.5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#C9A227] px-4 py-2.5 text-xs font-semibold text-white shadow-xs hover:opacity-95 disabled:opacity-50 transition-opacity cursor-pointer"
                   >
                     {tgTesting ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
-                    <span>Verify Node Gateway</span>
+                    <span>{tgTesting ? 'যাচাই করা হচ্ছে...' : 'Verify Bot Token (বট যাচাই করুন)'}</span>
                   </button>
 
                   <button
                     onClick={handleSendTelegramTestAlert}
-                    className="flex items-center space-x-1.5 rounded-xl bg-white border border-neutral-200 px-4 py-2.5 text-xs font-semibold text-neutral-700 hover:bg-[#FAF8F2] transition-colors cursor-pointer"
+                    disabled={isSendingAlert}
+                    className="flex items-center space-x-1.5 rounded-xl bg-[#1A1A1A] px-4 py-2.5 text-xs font-semibold text-[#FCF6BA] shadow-sm ring-1 ring-[#D4AF37] hover:bg-neutral-800 disabled:opacity-50 transition-all cursor-pointer"
                   >
-                    <Send className="h-3.5 w-3.5 text-neutral-600" />
-                    <span>Dispatch Cryptographic Heartbeat</span>
+                    {isSendingAlert ? <RefreshCw className="h-3.5 w-3.5 animate-spin text-[#D4AF37]" /> : <Send className="h-3.5 w-3.5 text-[#D4AF37]" />}
+                    <span>{isSendingAlert ? 'মেসেজ পাঠানো হচ্ছে...' : 'Send Live Test Alert (টেস্ট মেসেজ পাঠান)'}</span>
+                  </button>
+
+                  <button
+                    onClick={handleSaveTelegramSettings}
+                    disabled={isSavingTg}
+                    className="flex items-center space-x-1.5 rounded-xl bg-white border border-neutral-300 px-4 py-2.5 text-xs font-semibold text-neutral-700 hover:bg-[#FAF8F2] disabled:opacity-50 transition-colors cursor-pointer"
+                  >
+                    {isSavingTg ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5 text-neutral-600" />}
+                    <span>Save Settings (সেভ করুন)</span>
                   </button>
                 </div>
 
                 {tgSavedNotice && (
                   <div className="mt-4 flex items-center space-x-2.5 rounded-xl bg-emerald-50 p-3.5 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-200">
                     <CheckCircle className="h-4 w-4 text-emerald-600 shrink-0" />
-                    <span>Sovereign Node credentials saved permanently to database. Automatic uploads will now use this configuration without re-entering!</span>
+                    <span>টেলিগ্রাম সেটিংস সফলভাবে সেভ হয়েছে। এখন ক্লায়েন্ট ভল্ট অ্যাক্সেস ও মিডিয়া আপলোডের লাইভ নোটিফিকেশন চ্যানেলে পাঠানো হবে।</span>
                   </div>
                 )}
 
                 {tgTestResult && (
                   <div
-                    className={`mt-4 rounded-xl p-3.5 text-xs font-semibold ring-1 ${
+                    className={`mt-4 rounded-xl p-4 text-xs font-medium ring-1 space-y-1.5 ${
                       tgTestResult.success
-                        ? 'bg-emerald-50 text-emerald-800 ring-emerald-200'
-                        : 'bg-rose-50 text-rose-800 ring-rose-200'
+                        ? 'bg-emerald-50 text-emerald-900 ring-emerald-200'
+                        : 'bg-rose-50 text-rose-900 ring-rose-200'
                     }`}
                   >
-                    {tgTestResult.message || tgTestResult.error}
+                    <div className="flex items-start space-x-2">
+                      {tgTestResult.success ? (
+                        <CheckCircle className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
+                      ) : (
+                        <ShieldAlert className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
+                      )}
+                      <div>
+                        <p className="font-semibold">{tgTestResult.message || tgTestResult.error}</p>
+                        {tgTestResult.helpTip && (
+                          <p className="mt-1 text-[11px] opacity-90 leading-relaxed font-normal">
+                            💡 <b>টিপস:</b> {tgTestResult.helpTip}
+                          </p>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>

@@ -28,9 +28,15 @@ export function App() {
   const [isUnlockModalOpen, setIsUnlockModalOpen] = useState(false);
   const [pendingUnlockFolder, setPendingUnlockFolder] = useState<GalleryFolder | null>(null);
 
-  // Admin State
-  const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
-  const [adminToken, setAdminToken] = useState<string>('');
+  // Admin State (Persisted locally per browser/device)
+  const [isAdminLoggedIn, setIsAdminLoggedIn] = useState<boolean>(() => {
+    const session = LocalVaultStore.getAuthSession();
+    return !!(session && session.token);
+  });
+  const [adminToken, setAdminToken] = useState<string>(() => {
+    const session = LocalVaultStore.getAuthSession();
+    return session?.token || '';
+  });
   const [isAdminLoginModalOpen, setIsAdminLoginModalOpen] = useState(false);
 
   // Client Selections Modal State
@@ -43,15 +49,17 @@ export function App() {
     const search = window.location.search.toLowerCase();
     const isAdminRoute = path.startsWith('/admin') || hash.includes('admin') || search.includes('admin');
 
+    const effectiveLoggedIn = loggedIn || !!LocalVaultStore.getAuthSession()?.token;
+
     if (isAdminRoute) {
-      if (loggedIn) {
+      if (effectiveLoggedIn) {
         setCurrentView('admin');
         setIsAdminLoginModalOpen(false);
       } else {
         setIsAdminLoginModalOpen(true);
       }
     } else if (path === '/' || path === '' || hash === '' || hash === '#/') {
-      if (currentView === 'admin' && !loggedIn) {
+      if (currentView === 'admin' && !effectiveLoggedIn) {
         setCurrentView('home');
       }
     }
@@ -66,12 +74,16 @@ export function App() {
         window.location.hash = '/admin';
       }
     }
-    if (isAdminLoggedIn) {
+    const session = LocalVaultStore.getAuthSession();
+    if (isAdminLoggedIn || (session && session.token)) {
+      if (!isAdminLoggedIn) setIsAdminLoggedIn(true);
+      if (!adminToken && session?.token) setAdminToken(session.token);
       setCurrentView('admin');
+      setIsAdminLoginModalOpen(false);
     } else {
       setIsAdminLoginModalOpen(true);
     }
-  }, [isAdminLoggedIn]);
+  }, [isAdminLoggedIn, adminToken]);
 
   // Navigate to Public Home URL safely
   const navigateToHome = useCallback(() => {
@@ -85,6 +97,21 @@ export function App() {
     setActiveFolder(null);
     setCurrentView('home');
   }, []);
+
+  // Log out of admin session completely on this browser/device
+  const handleAdminLogout = useCallback(() => {
+    LocalVaultStore.clearAuthSession();
+    setIsAdminLoggedIn(false);
+    setAdminToken('');
+    LocalVaultStore.addAuditLog({
+      action: 'Admin Logged Out',
+      details: 'User explicitly ended session on this device',
+      ip: '127.0.0.1',
+      status: 'success',
+      category: 'auth',
+    });
+    navigateToHome();
+  }, [navigateToHome]);
 
   // Listen for browser popstate and URL changes
   useEffect(() => {
@@ -228,6 +255,7 @@ export function App() {
         }}
         telegramSettings={telegramSettings}
         selectedCount={0}
+        isAdminLoggedIn={isAdminLoggedIn}
       />
 
       {/* VIEW: HOME EXPLORER */}
@@ -289,7 +317,7 @@ export function App() {
           {/* Running Ticker / Continuous Scrolling Marquee as a subtle design layer */}
           <FeatureTicker />
 
-          {/* Clean Minimalist Footer */}
+          {/* Clean Minimalist Footer with Admin Access */}
           <footer className="border-t border-[#D4AF37]/20 bg-white py-8 text-neutral-500">
             <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs">
               <div className="flex items-center space-x-2">
@@ -297,9 +325,18 @@ export function App() {
                 <span className="text-neutral-300">•</span>
                 <span className="text-neutral-500">Private Gallery & Client Proofing Archive</span>
               </div>
-              <p className="text-[11px] text-neutral-400 text-center sm:text-right">
-                Encrypted Storage & Lossless Media Streaming
-              </p>
+              <div className="flex items-center space-x-4">
+                <p className="text-[11px] text-neutral-400 text-center sm:text-right">
+                  Encrypted Storage & Lossless Media Streaming
+                </p>
+                <button
+                  onClick={navigateToAdmin}
+                  title="Admin Access (Shortcut: Ctrl+Alt+A)"
+                  className="text-[11px] font-medium text-neutral-400 hover:text-[#997A15] transition-colors cursor-pointer"
+                >
+                  {isAdminLoggedIn ? 'Admin Suite •' : 'Admin Login •'}
+                </button>
+              </div>
             </div>
           </footer>
         </main>
@@ -321,6 +358,7 @@ export function App() {
         <AdminDashboard
           adminToken={adminToken}
           onBackToHome={navigateToHome}
+          onLogout={handleAdminLogout}
         />
       )}
 
@@ -349,7 +387,8 @@ export function App() {
             }
           }
         }}
-        onLoginSuccess={(token) => {
+        onLoginSuccess={(token, user) => {
+          LocalVaultStore.saveAuthSession(token, user);
           setAdminToken(token);
           setIsAdminLoggedIn(true);
           setCurrentView('admin');

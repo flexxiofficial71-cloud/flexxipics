@@ -1,5 +1,5 @@
 import React from 'react';
-import { Shield, Sparkles, CheckSquare } from 'lucide-react';
+import { Shield, Sparkles, CheckSquare, LayoutDashboard } from 'lucide-react';
 import { TelegramSettings } from '../types';
 
 interface NavbarProps {
@@ -8,6 +8,7 @@ interface NavbarProps {
   telegramSettings: TelegramSettings | null;
   selectedCount: number;
   onOpenSelectionModal?: () => void;
+  isAdminLoggedIn?: boolean;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -15,6 +16,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onNavigate,
   selectedCount,
   onOpenSelectionModal,
+  isAdminLoggedIn,
 }) => {
   return (
     <header className="sticky top-0 z-40 w-full border-b border-[#D4AF37]/30 bg-gradient-to-r from-[#FAF8F2] via-white to-[#FAF8F2] shadow-xs backdrop-blur-md transition-all duration-300">
@@ -66,10 +68,21 @@ export const Navbar: React.FC<NavbarProps> = ({
           {selectedCount > 0 && onOpenSelectionModal && (
             <button
               onClick={onOpenSelectionModal}
-              className="flex items-center space-x-1.5 rounded-full bg-gradient-to-r from-[#D4AF37] to-[#C9A227] px-3 py-1.5 text-xs font-semibold text-white shadow-xs transition-all hover:opacity-95"
+              className="flex items-center space-x-1.5 rounded-full bg-gradient-to-r from-[#D4AF37] to-[#C9A227] px-3 py-1.5 text-xs font-semibold text-white shadow-xs transition-all hover:opacity-95 cursor-pointer"
             >
               <CheckSquare className="h-3.5 w-3.5 text-white" />
               <span>{selectedCount}</span>
+            </button>
+          )}
+
+          {/* Admin Dashboard Quick Access when Logged In */}
+          {isAdminLoggedIn && currentView !== 'admin' && (
+            <button
+              onClick={() => onNavigate('admin')}
+              className="flex items-center space-x-1.5 rounded-full bg-[#1A1A1A] px-3 py-1.5 text-xs font-semibold text-[#FCF6BA] ring-1 ring-[#D4AF37] shadow-xs hover:bg-neutral-800 transition-all cursor-pointer"
+            >
+              <LayoutDashboard className="h-3.5 w-3.5 text-[#D4AF37]" />
+              <span className="hidden sm:inline">Admin Suite</span>
             </button>
           )}
         </div>
