@@ -343,7 +343,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
       photographerName: folderForm.photographerName.trim(),
       photographerSocialPlatform: folderForm.photographerSocialPlatform,
       photographerUsername: folderForm.photographerUsername.trim(),
-      photographerCustomUrl: folderForm.photographerCustomUrl.trim(),
+      photographerCustomUrl: folderForm.photographerSocialPlatform === 'custom' ? folderForm.photographerUsername.trim() : '',
     };
 
     try {
@@ -484,8 +484,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
   // Handle Multi-file Upload
   const handleUploadSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!targetFolderId) {
-      alert('Please select a target folder.');
+    let folderIdToUse = targetFolderId;
+    if (!folderIdToUse && folders.length > 0) {
+      folderIdToUse = folders[0].id;
+      setTargetFolderId(folderIdToUse);
+    }
+    if (!folderIdToUse) {
+      alert('Please create or select a target vault folder first.');
       return;
     }
     if (uploadFiles.length === 0) {
@@ -498,7 +503,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
     setUploadResultCount(null);
 
     const formData = new FormData();
-    formData.append('folderId', targetFolderId);
+    formData.append('folderId', folderIdToUse);
     formData.append('useAI', String(useAIAnalysis));
     formData.append('syncTelegram', String(syncWithTelegram));
 
@@ -507,28 +512,44 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
     }
 
     try {
-      setUploadProgress(60);
-      const response = await safeFetchJson<{ success: boolean; count?: number; media?: MediaItem[]; error?: string }>('/api/media/upload', {
+      setUploadProgress(50);
+      const response = await safeFetchJson<{ success: boolean; count?: number; items?: MediaItem[]; media?: MediaItem[]; error?: string }>('/api/media/upload', {
         method: 'POST',
         body: formData,
       });
 
-      if (response.success && response.data?.success) {
+      if (response.success && (response.data?.success || response.data?.items || response.data?.media)) {
+        const returnedItems = response.data?.items || response.data?.media || [];
         setUploadProgress(100);
-        setUploadResultCount(response.data.count || uploadFiles.length);
+        setUploadResultCount(response.data?.count || returnedItems.length || uploadFiles.length);
         setUploadFiles([]);
-        fetchData();
+
+        // Sync items into local store
+        if (returnedItems.length > 0) {
+          const allMedia = LocalVaultStore.getMedia();
+          const existingIds = new Set(allMedia.map(m => m.id));
+          const toAdd = returnedItems.filter(item => !existingIds.has(item.id));
+          allMedia.unshift(...toAdd);
+          LocalVaultStore.saveMedia(allMedia);
+        }
+
+        await fetchData();
         return;
       }
 
-      // Standalone Client-side File Ingestion fallback (reads files as Object URLs)
+      // If backend returned error
+      if (response.error || response.data?.error) {
+        console.warn('Backend upload notice:', response.error || response.data?.error);
+      }
+
+      // Standalone Client-side File Ingestion fallback (reads files as Object URLs / Base64)
       const newItems: MediaItem[] = [];
       for (const file of uploadFiles) {
         const objectUrl = URL.createObjectURL(file);
         const isVideo = file.type.startsWith('video');
         const mediaItem: MediaItem = {
-          id: `med-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
-          folderId: targetFolderId,
+          id: `med-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
+          folderId: folderIdToUse,
           fileName: file.name,
           url: objectUrl,
           fileSize: file.size,
@@ -550,7 +571,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
 
       // Update folder photo/video count & cover if empty
       const allFolders = LocalVaultStore.getFolders();
-      const folderIdx = allFolders.findIndex(f => f.id === targetFolderId);
+      const folderIdx = allFolders.findIndex(f => f.id === folderIdToUse);
       if (folderIdx !== -1) {
         const newPhotos = newItems.filter(i => i.fileType === 'image').length;
         const newVideos = newItems.filter(i => i.fileType === 'video').length;
@@ -564,7 +585,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
 
       LocalVaultStore.addAuditLog({
         action: 'Batch Media Ingestion',
-        details: `Uploaded ${newItems.length} items to vault "${allFolders[folderIdx]?.name || targetFolderId}"`,
+        details: `Uploaded ${newItems.length} items to vault "${allFolders[folderIdx]?.name || folderIdToUse}"`,
         ip: '127.0.0.1',
         status: 'success',
         category: 'upload',
@@ -573,10 +594,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
       setUploadProgress(100);
       setUploadResultCount(newItems.length);
       setUploadFiles([]);
-      fetchData();
-    } catch (err) {
-      alert('Upload processed with local client storage.');
-      fetchData();
+      await fetchData();
+    } catch (err: any) {
+      console.error('Upload handler error:', err);
+      alert('Upload processed. Checking gallery sync...');
+      await fetchData();
     } finally {
       setIsUploading(false);
     }
@@ -1039,7 +1061,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
             >
               <div className="flex items-center space-x-2">
                 <LogOut className="h-3.5 w-3.5 text-rose-600" />
-                <span>Log Out (লগআউট)</span>
+                <span>Log Out</span>
               </div>
               <span className="text-[10px] text-rose-400 font-mono">End Session</span>
             </button>
@@ -2082,7 +2104,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
                   <div>
                     <h3 className="font-serif text-lg font-bold text-[#1A1A1A]">Telegram Cloud & Real-Time Alert Engine</h3>
                     <p className="text-xs text-neutral-500">
-                      টেলিগ্রাম বট এবং চ্যানেল যুক্ত করে রিয়েল-টাইম ক্লায়েন্ট ভল্ট আনলক, ফটো লাইক ও মিডিয়া আপলোডের লাইভ নোটিফিকেশন পান।
+                      Connect a Telegram Bot and Channel to receive real-time notifications for client vault unlocks, photo selections, and media uploads.
                     </p>
                   </div>
                 </div>
@@ -2096,19 +2118,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
 
               {/* Instructions Guide */}
               <div className="mt-5 rounded-xl border border-[#D4AF37]/20 bg-[#FAF8F2] p-4 text-xs text-neutral-600">
-                <p className="font-semibold text-neutral-800 mb-1">কীভাবে সেটআপ করবেন:</p>
+                <p className="font-semibold text-neutral-800 mb-1">How to set up:</p>
                 <ol className="list-decimal pl-4 space-y-1 text-[11px] text-neutral-600">
-                  <li>টেলিগ্রামে <b>@BotFather</b>-এ গিয়ে <code>/newbot</code> দিয়ে একটি নতুন বট বানান এবং <b>API Token</b> টি কপি করে নিচে পেস্ট করুন।</li>
-                  <li>আপনার চ্যানেল বা গ্রুপে বটটিকে <b>Administrator</b> (Post Messages পারমিশন সহ) হিসেবে যুক্ত করুন।</li>
-                  <li>চ্যানেল ইউজারনেম (যেমন <code>@MyChannel</code>) অথবা চ্যাট আইডি দিন এবং <b>"Send Live Test Alert"</b> বাটনে চাপুন।</li>
-                  <li>পার্সোনাল অ্যাকাউন্টে মেসেজ পেতে চাইলে বটে গিয়ে <code>/start</code> চেপে আপনার Telegram User ID দিন।</li>
+                  <li>Open <b>@BotFather</b> on Telegram, send <code>/newbot</code> to create a bot, and paste the <b>API Token</b> below.</li>
+                  <li>Add your bot as an <b>Administrator</b> (with Post Messages permission) to your target channel or group.</li>
+                  <li>Enter your channel username (e.g. <code>@MyChannel</code>) or numeric chat ID and click <b>"Send Live Test Alert"</b>.</li>
+                  <li>To receive direct messages to your personal Telegram, start a chat with your bot (<code>/start</code>) and enter your Telegram User ID.</li>
                 </ol>
               </div>
 
               <div className="mt-6 space-y-4">
                 <div>
                   <label className="block text-[11px] font-semibold text-neutral-700 uppercase tracking-wider mb-1">
-                    Telegram Bot API Token (বট টোকেন)
+                    Telegram Bot API Token
                   </label>
                   <input
                     type="password"
@@ -2118,13 +2140,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
                     className="w-full rounded-xl border border-[#D4AF37]/30 bg-[#FAF8F2] px-4 py-2.5 text-xs text-[#1A1A1A] font-mono focus:border-[#D4AF37] focus:bg-white focus:outline-none"
                   />
                   <p className="mt-1 text-[10px] text-neutral-400">
-                    @BotFather থেকে পাওয়া গোপনীয় বট টোকেন। এটি সুরক্ষিতভাবে এনক্রিপ্ট থাকবে।
+                    Confidential Bot Token from @BotFather. This is securely encrypted.
                   </p>
                 </div>
 
                 <div>
                   <label className="block text-[11px] font-semibold text-neutral-700 uppercase tracking-wider mb-1">
-                    Target Channel / Chat ID (চ্যানেল বা চ্যাট আইডি)
+                    Target Channel / Chat ID
                   </label>
                   <input
                     type="text"
@@ -2134,7 +2156,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
                     className="w-full rounded-xl border border-[#D4AF37]/30 bg-[#FAF8F2] px-4 py-2.5 text-xs text-[#1A1A1A] font-mono focus:border-[#D4AF37] focus:bg-white focus:outline-none"
                   />
                   <p className="mt-1 text-[10px] text-neutral-400">
-                    চ্যানেলের পাবলিক ইউজারনেম (@ সহ) অথবা নিউমেরিক চ্যাট আইডি।
+                    Public channel username (with @ prefix) or numeric channel/chat ID.
                   </p>
                 </div>
 
@@ -2145,7 +2167,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
                     className="flex items-center space-x-1.5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#C9A227] px-4 py-2.5 text-xs font-semibold text-white shadow-xs hover:opacity-95 disabled:opacity-50 transition-opacity cursor-pointer"
                   >
                     {tgTesting ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
-                    <span>{tgTesting ? 'যাচাই করা হচ্ছে...' : 'Verify Bot Token (বট যাচাই করুন)'}</span>
+                    <span>{tgTesting ? 'Verifying...' : 'Verify Bot Token'}</span>
                   </button>
 
                   <button
@@ -2154,7 +2176,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
                     className="flex items-center space-x-1.5 rounded-xl bg-[#1A1A1A] px-4 py-2.5 text-xs font-semibold text-[#FCF6BA] shadow-sm ring-1 ring-[#D4AF37] hover:bg-neutral-800 disabled:opacity-50 transition-all cursor-pointer"
                   >
                     {isSendingAlert ? <RefreshCw className="h-3.5 w-3.5 animate-spin text-[#D4AF37]" /> : <Send className="h-3.5 w-3.5 text-[#D4AF37]" />}
-                    <span>{isSendingAlert ? 'মেসেজ পাঠানো হচ্ছে...' : 'Send Live Test Alert (টেস্ট মেসেজ পাঠান)'}</span>
+                    <span>{isSendingAlert ? 'Sending Message...' : 'Send Live Test Alert'}</span>
                   </button>
 
                   <button
@@ -2163,14 +2185,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
                     className="flex items-center space-x-1.5 rounded-xl bg-white border border-neutral-300 px-4 py-2.5 text-xs font-semibold text-neutral-700 hover:bg-[#FAF8F2] disabled:opacity-50 transition-colors cursor-pointer"
                   >
                     {isSavingTg ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5 text-neutral-600" />}
-                    <span>Save Settings (সেভ করুন)</span>
+                    <span>Save Settings</span>
                   </button>
                 </div>
 
                 {tgSavedNotice && (
                   <div className="mt-4 flex items-center space-x-2.5 rounded-xl bg-emerald-50 p-3.5 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-200">
                     <CheckCircle className="h-4 w-4 text-emerald-600 shrink-0" />
-                    <span>টেলিগ্রাম সেটিংস সফলভাবে সেভ হয়েছে। এখন ক্লায়েন্ট ভল্ট অ্যাক্সেস ও মিডিয়া আপলোডের লাইভ নোটিফিকেশন চ্যানেলে পাঠানো হবে।</span>
+                    <span>Telegram settings saved successfully. Real-time notifications will now be dispatched to your channel.</span>
                   </div>
                 )}
 
@@ -2192,7 +2214,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
                         <p className="font-semibold">{tgTestResult.message || tgTestResult.error}</p>
                         {tgTestResult.helpTip && (
                           <p className="mt-1 text-[11px] opacity-90 leading-relaxed font-normal">
-                            💡 <b>টিপস:</b> {tgTestResult.helpTip}
+                            💡 <b>Tip:</b> {tgTestResult.helpTip}
                           </p>
                         )}
                       </div>
@@ -2334,15 +2356,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
                 )}
               </div>
 
-              {/* Cover Image URL */}
+              {/* Cover Image URL (Optional) */}
               <div>
-                <label className="block text-[11px] font-semibold text-neutral-700 uppercase mb-1">Cover Image URL</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-[11px] font-semibold text-neutral-700 uppercase">Cover Image URL</label>
+                  <span className="text-[10px] text-neutral-400 font-normal">Optional • Defaults to First Photo</span>
+                </div>
                 <input
                   type="text"
                   value={folderForm.coverUrl}
                   onChange={e => setFolderForm({ ...folderForm, coverUrl: e.target.value })}
-                  placeholder="https://images.unsplash.com/..."
-                  className="w-full rounded-xl border border-[#D4AF37]/30 bg-[#FAF8F2] px-4 py-2 text-xs text-[#1A1A1A] font-mono focus:outline-none"
+                  placeholder="https://images.unsplash.com/... (optional)"
+                  className="w-full rounded-xl border border-[#D4AF37]/30 bg-[#FAF8F2] px-4 py-2 text-xs text-[#1A1A1A] font-mono focus:border-[#D4AF37] focus:bg-white focus:outline-none"
                 />
               </div>
 
@@ -2354,10 +2379,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
                   </div>
                   <div>
                     <h4 className="font-serif text-xs font-bold text-[#1A1A1A]">
-                      Photographer Credits & Socials (ফটোগ্রাফার প্রোফাইল ও সোশ্যাল মিডিয়া)
+                      Photographer & Creator Credits
                     </h4>
                     <p className="text-[10px] text-neutral-500">
-                      ফটোগ্রাফারের নাম, সোশ্যাল প্ল্যাটফর্ম ইউজারনেম ও কাস্টম ইউআরএল লিঙ্ক সেট করুন
+                      Set the photographer name and social profile or custom website/portfolio link
                     </p>
                   </div>
                 </div>
@@ -2365,7 +2390,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
                 {/* Photographer Name */}
                 <div>
                   <label className="block text-[10px] font-semibold text-neutral-700 uppercase mb-1">
-                    Photographer / Studio Name (ফটোগ্রাফারের নাম)
+                    Photographer / Studio Name
                   </label>
                   <input
                     type="text"
@@ -2376,11 +2401,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
                   />
                 </div>
 
-                {/* Social Platform Selector & Username Handle */}
+                {/* Social Platform Selector & Username / Website Link Handle */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-[10px] font-semibold text-neutral-700 uppercase mb-1">
-                      Social Platform (সোশ্যাল মিডিয়া)
+                      Social Platform / Link Type
                     </label>
                     <select
                       value={folderForm.photographerSocialPlatform}
@@ -2395,19 +2420,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
 
                   <div>
                     <label className="block text-[10px] font-semibold text-neutral-700 uppercase mb-1">
-                      Username / Handle (ইউজারনেম)
+                      {folderForm.photographerSocialPlatform === 'custom' ? 'Portfolio / Website URL' : 'Username / Handle'}
                     </label>
                     <div className="relative">
                       <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-neutral-400">
-                        <AtSign className="h-3.5 w-3.5" />
+                        {folderForm.photographerSocialPlatform === 'custom' ? (
+                          <Globe className="h-3.5 w-3.5 text-[#997A15]" />
+                        ) : (
+                          <AtSign className="h-3.5 w-3.5" />
+                        )}
                       </div>
                       <input
                         type="text"
                         value={folderForm.photographerUsername}
-                        onChange={e => setFolderForm({ ...folderForm, photographerUsername: e.target.value.replace(/^@/, '') })}
+                        onChange={e => setFolderForm({
+                          ...folderForm,
+                          photographerUsername: folderForm.photographerSocialPlatform === 'custom'
+                            ? e.target.value
+                            : e.target.value.replace(/^@/, '')
+                        })}
                         placeholder={
-                          SOCIAL_PLATFORMS.find(p => p.id === folderForm.photographerSocialPlatform)?.placeholder ||
-                          'username'
+                          folderForm.photographerSocialPlatform === 'custom'
+                            ? 'https://yourwebsite.com or portfolio link'
+                            : SOCIAL_PLATFORMS.find(p => p.id === folderForm.photographerSocialPlatform)?.placeholder ||
+                              'username'
                         }
                         className="w-full rounded-xl border border-[#D4AF37]/30 bg-white pl-8 pr-3 py-2 text-xs text-[#1A1A1A] font-mono focus:outline-none focus:ring-1 focus:ring-[#D4AF37]"
                       />
@@ -2415,7 +2451,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
                   </div>
                 </div>
 
-                {/* Live Social URL Preview */}
+                {/* Live Social / Portfolio URL Preview */}
                 {folderForm.photographerUsername && (
                   <div className="flex items-center space-x-1.5 rounded-lg bg-white px-3 py-1.5 text-[11px] font-mono text-neutral-600 border border-[#D4AF37]/20">
                     {renderPlatformIcon(folderForm.photographerSocialPlatform, 'h-3.5 w-3.5 text-[#997A15] shrink-0')}
@@ -2425,31 +2461,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
                     </span>
                   </div>
                 )}
-
-                {/* Dedicated Custom URL Field */}
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="block text-[10px] font-semibold text-neutral-700 uppercase">
-                      কাস্টম ইউআরএল (Custom Website / Portfolio URL)
-                    </label>
-                    <span className="text-[10px] text-neutral-400 font-normal">Direct Link</span>
-                  </div>
-                  <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-neutral-400">
-                      <Globe className="h-3.5 w-3.5 text-[#B38728]" />
-                    </div>
-                    <input
-                      type="url"
-                      value={folderForm.photographerCustomUrl}
-                      onChange={e => setFolderForm({ ...folderForm, photographerCustomUrl: e.target.value })}
-                      placeholder="https://siamphotography.com or portfolio link"
-                      className="w-full rounded-xl border border-[#D4AF37]/30 bg-white pl-8 pr-3 py-2 text-xs text-[#1A1A1A] font-mono focus:outline-none focus:ring-1 focus:ring-[#D4AF37]"
-                    />
-                  </div>
-                  <p className="mt-1 text-[10px] text-neutral-500">
-                    ফটোগ্রাফারের নিজস্ব কাস্টম ওয়েবসাইট বা পোর্টফোলিও লিঙ্ক। ভিজিটররা এই লিঙ্কে ক্লিক করে সরাসরি ফটোগ্রাফারের সাইটে যেতে পারবেন।
-                  </p>
-                </div>
               </div>
 
               <button
@@ -2717,7 +2728,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToHome, on
                     {userForm.storageLimitMb === 0 ? (
                       <>
                         <Infinity className="h-3.5 w-3.5 text-emerald-600" />
-                        <span className="text-emerald-700">Unlimited (আনলিমিটেড)</span>
+                        <span className="text-emerald-700">Unlimited Quota</span>
                       </>
                     ) : userForm.storageLimitMb >= 1048576 ? (
                       <span>{(userForm.storageLimitMb / 1048576).toFixed(0)} TB Quota</span>

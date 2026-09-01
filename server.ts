@@ -452,136 +452,173 @@ async function startServer() {
   });
 
   // Multi-upload media endpoint
-  app.post('/api/media/upload', upload.array('files', 20) as any, async (req, res) => {
-    const files = req.files as Express.Multer.File[];
-    const folderId = req.body.folderId;
-    const useAI = req.body.useAI === 'true' || req.body.useAI === true;
-    const syncTelegram = req.body.syncTelegram !== 'false';
+  app.post(
+    '/api/media/upload',
+    (req, res, next) => {
+      upload.array('files', 100)(req, res, (err) => {
+        if (err) {
+          console.error('Multer upload error:', err);
+          return res.status(400).json({ error: 'File upload error: ' + (err.message || 'Failed to process media files') });
+        }
+        next();
+      });
+    },
+    async (req, res) => {
+      const files = req.files as Express.Multer.File[];
+      const folderId = req.body.folderId;
+      const useAI = req.body.useAI === 'true' || req.body.useAI === true;
+      const syncTelegram = req.body.syncTelegram !== 'false';
 
-    if (!folderId) {
-      return res.status(400).json({ error: 'Target folder ID is required' });
-    }
+      if (!files || files.length === 0) {
+        return res.status(400).json({ error: 'No files provided for upload' });
+      }
 
-    const folder = VaultDB.getFolderById(folderId);
-    if (!folder) {
-      return res.status(404).json({ error: 'Target folder not found' });
-    }
-
-    if (!files || files.length === 0) {
-      return res.status(400).json({ error: 'No files provided for upload' });
-    }
-
-    const telegramSettings = VaultDB.getTelegramSettings();
-    const uploadedItems = [];
-
-    for (const file of files) {
-      const mime = file.mimetype;
-      let mediaType: 'image' | 'video' | 'raw' | 'document' = 'image';
-
-      if (mime.startsWith('video/')) mediaType = 'video';
-      else if (file.originalname.match(/\.(cr2|cr3|nef|arw|dng|raw)$/i)) mediaType = 'raw';
-      else if (mime.includes('pdf') || mime.includes('zip') || mime.includes('rar')) mediaType = 'document';
-
-      const fileUrl = `/uploads/${file.filename}`;
-      let aiAnalysis: {
-        tags: string[];
-        faces: string[];
-        qualityScore: number;
-        aestheticScore: number;
-        isCoverCandidate: boolean;
-        coverReason?: string;
-      } = {
-        tags: ['High-Res', 'Vault'],
-        faces: [] as string[],
-        qualityScore: 90,
-        aestheticScore: 92,
-        isCoverCandidate: true,
-        coverReason: 'Golden ratio composition',
-      };
-
-      if (useAI && mediaType === 'image') {
-        try {
-          const buffer = await fs.promises.readFile(file.path);
-          const base64 = buffer.toString('base64');
-          aiAnalysis = await analyzeMediaWithAI(file.originalname, folder.name, base64, file.mimetype);
-        } catch (err) {
-          console.warn('AI analysis skipped for file:', file.originalname, err);
+      let folder = folderId ? VaultDB.getFolderById(folderId, false) : undefined;
+      if (!folder) {
+        const allFolders = VaultDB.getFolders(true);
+        folder = (folderId ? allFolders.find(f => f.id === folderId) : undefined) || allFolders[0];
+        if (!folder) {
+          folder = {
+            id: folderId || 'fld-' + Date.now(),
+            name: 'Main Archive Vault',
+            slug: 'main-archive',
+            description: 'Secure client media vault',
+            category: 'Weddings & Celebrations',
+            isPasswordProtected: false,
+            downloadPermission: 'allowed',
+            watermark: { enabled: false, type: 'text', text: 'PHOTOVAULT', position: 'bottom-right', opacity: 20 },
+            tags: ['Uploads', 'Archive'],
+            photoCount: 0,
+            videoCount: 0,
+            accessCount: 0,
+            failedAttempts: 0,
+            status: 'active',
+            clientFavoritesCount: 0,
+            createdAt: new Date().toISOString(),
+          };
+          VaultDB.createFolder(folder);
         }
       }
 
-      // Telegram storage sync
-      let telegramResult = {
-        fileId: `AgACAgIAAxkBA_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`,
-        messageId: Math.floor(1000 + Math.random() * 9000),
-        isSimulated: true,
-      };
+      const telegramSettings = VaultDB.getTelegramSettings();
+      const uploadedItems: any[] = [];
 
-      if (syncTelegram) {
-        const caption = `📸 <b>PhotoVault Media</b>\nFolder: <code>${folder.name}</code>\nFile: <code>${file.originalname}</code>\nSize: ${(file.size / 1024 / 1024).toFixed(2)} MB`;
-        const resTg = await TelegramService.uploadMedia(
+      await Promise.all(
+        files.map(async (file) => {
+          const mime = file.mimetype || 'image/jpeg';
+          let mediaType: 'image' | 'video' | 'raw' | 'document' = 'image';
+
+          if (mime.startsWith('video/')) mediaType = 'video';
+          else if (file.originalname.match(/\.(cr2|cr3|nef|arw|dng|raw)$/i)) mediaType = 'raw';
+          else if (mime.includes('pdf') || mime.includes('zip') || mime.includes('rar')) mediaType = 'document';
+
+          const fileUrl = `/uploads/${file.filename}`;
+          let aiAnalysis: {
+            tags: string[];
+            faces: string[];
+            qualityScore: number;
+            aestheticScore: number;
+            isCoverCandidate: boolean;
+            coverReason?: string;
+          } = {
+            tags: ['High-Res', 'Vault'],
+            faces: [] as string[],
+            qualityScore: 90,
+            aestheticScore: 92,
+            isCoverCandidate: true,
+            coverReason: 'Golden ratio composition',
+          };
+
+          if (useAI && mediaType === 'image') {
+            try {
+              const buffer = await fs.promises.readFile(file.path);
+              const base64 = buffer.toString('base64');
+              aiAnalysis = await analyzeMediaWithAI(file.originalname, folder!.name, base64, file.mimetype);
+            } catch (err) {
+              console.warn('AI analysis skipped for file:', file.originalname, err);
+            }
+          }
+
+          // Telegram storage sync
+          let telegramResult = {
+            fileId: `AgACAgIAAxkBA_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`,
+            messageId: Math.floor(1000 + Math.random() * 9000),
+            isSimulated: true,
+          };
+
+          if (syncTelegram && telegramSettings.botToken && telegramSettings.channelId) {
+            try {
+              const caption = `📸 <b>PhotoVault Media</b>\nFolder: <code>${folder!.name}</code>\nFile: <code>${file.originalname}</code>\nSize: ${(file.size / 1024 / 1024).toFixed(2)} MB`;
+              const resTg = await TelegramService.uploadMedia(
+                telegramSettings.botToken,
+                telegramSettings.channelId,
+                file.path,
+                file.originalname,
+                caption,
+                mediaType
+              );
+              telegramResult = {
+                fileId: resTg.fileId,
+                messageId: resTg.messageId || telegramResult.messageId,
+                isSimulated: resTg.isSimulated || false,
+              };
+            } catch (tgErr) {
+              console.warn('Telegram upload error for item:', tgErr);
+            }
+          }
+
+          const mediaItem = {
+            id: 'med-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+            folderId: folder!.id,
+            fileName: file.originalname,
+            fileType: mediaType,
+            mimeType: file.mimetype || 'image/jpeg',
+            fileSize: file.size,
+            url: fileUrl,
+            telegramFileId: telegramResult.fileId,
+            telegramMessageId: telegramResult.messageId,
+            telegramStatus: 'synced' as const,
+            title: file.originalname.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' '),
+            caption: aiAnalysis.coverReason || '',
+            tags: aiAnalysis.tags,
+            aiTags: aiAnalysis.tags,
+            aiFaces: aiAnalysis.faces,
+            clientLikes: 0,
+            clientFavorited: false,
+            clientSelected: false,
+            createdAt: new Date().toISOString(),
+          };
+
+          VaultDB.addMedia(mediaItem);
+          uploadedItems.push(mediaItem);
+        })
+      );
+
+      VaultDB.addAuditLog({
+        action: 'Media Upload Batch',
+        details: `Uploaded ${files.length} items to folder "${folder.name}" with Telegram sync`,
+        ip: req.ip || '127.0.0.1',
+        status: 'success',
+        category: 'upload',
+      });
+
+      // Send Telegram alert if bot is configured
+      if (telegramSettings.botToken && telegramSettings.channelId) {
+        TelegramService.sendMessage(
           telegramSettings.botToken,
           telegramSettings.channelId,
-          file.path,
-          file.originalname,
-          caption,
-          mediaType
-        );
-        telegramResult = {
-          fileId: resTg.fileId,
-          messageId: resTg.messageId || telegramResult.messageId,
-          isSimulated: resTg.isSimulated || false,
-        };
+          `⚡ <b>PhotoVault Batch Upload</b>\n${uploadedItems.length} media item(s) deposited into <code>${folder.name}</code>.\nVault storage active & live.`
+        ).catch(() => {});
       }
 
-      const mediaItem = {
-        id: 'med-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
-        folderId: folder.id,
-        fileName: file.originalname,
-        fileType: mediaType,
-        mimeType: file.mimetype,
-        fileSize: file.size,
-        url: fileUrl,
-        telegramFileId: telegramResult.fileId,
-        telegramMessageId: telegramResult.messageId,
-        telegramStatus: 'synced' as const,
-        title: file.originalname.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' '),
-        caption: aiAnalysis.coverReason || '',
-        tags: aiAnalysis.tags,
-        aiTags: aiAnalysis.tags,
-        aiFaces: aiAnalysis.faces,
-        clientLikes: 0,
-        clientFavorited: false,
-        clientSelected: false,
-        createdAt: new Date().toISOString(),
-      };
-
-      VaultDB.addMedia(mediaItem);
-      uploadedItems.push(mediaItem);
+      res.status(201).json({
+        success: true,
+        count: uploadedItems.length,
+        items: uploadedItems,
+        media: uploadedItems,
+      });
     }
-
-    VaultDB.addAuditLog({
-      action: 'Media Upload Batch',
-      details: `Uploaded ${files.length} items to folder "${folder.name}" with Telegram sync`,
-      ip: req.ip || '127.0.0.1',
-      status: 'success',
-      category: 'upload',
-    });
-
-    // Send Telegram alert if configured
-    if (telegramSettings.isConnected && telegramSettings.sendUploadAlerts && telegramSettings.botToken && telegramSettings.channelId) {
-      TelegramService.sendMessage(
-        telegramSettings.botToken,
-        telegramSettings.channelId,
-        `⚡ <b>PhotoVault Batch Upload</b>\n${files.length} media item(s) deposited into <code>${folder.name}</code>.\nVault storage active.`
-      ).catch(() => {});
-    }
-
-    res.status(201).json({
-      success: true,
-      count: uploadedItems.length,
-      items: uploadedItems,
-    });
-  });
+  );
 
   // Toggle favorite photo
   app.post('/api/media/:id/favorite', (req, res) => {

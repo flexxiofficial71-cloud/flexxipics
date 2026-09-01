@@ -88,7 +88,7 @@ export const SOCIAL_PLATFORMS: SocialPlatformConfig[] = [
   },
   {
     id: 'custom',
-    label: 'কাস্টম ইউআরএল (Custom Website/Portfolio)',
+    label: 'Custom Website / Portfolio',
     placeholder: 'https://yourwebsite.com or portfolio link',
     prefixUrl: '',
     color: '#D4AF37',
@@ -195,7 +195,7 @@ export const PhotographerCreditBanner: React.FC<PhotographerCreditBannerProps> =
       <div className="min-w-0 flex-1">
         <div className="flex items-center space-x-1.5">
           <span className="text-[10px] font-bold uppercase tracking-wider text-[#997A15]">
-            Photographer & Creator Credits (ফটোগ্রাফার প্রোফাইল)
+            Photographer & Creator Credits
           </span>
         </div>
         <h4 className="font-serif text-sm sm:text-base font-bold text-[#1A1A1A] truncate">
@@ -203,7 +203,7 @@ export const PhotographerCreditBanner: React.FC<PhotographerCreditBannerProps> =
         </h4>
         {username && (
           <p className="text-[11px] font-medium text-neutral-500 font-mono">
-            {socialPlatform.toUpperCase()}: @{username.replace(/^@/, '')}
+            {socialPlatform === 'custom' ? 'PORTFOLIO' : socialPlatform.toUpperCase()}: {socialPlatform === 'custom' ? username : `@${username.replace(/^@/, '')}`}
           </p>
         )}
       </div>
@@ -228,6 +228,8 @@ export const PhotographerCreditBanner: React.FC<PhotographerCreditBannerProps> =
                 ? 'Facebook'
                 : socialPlatform === 'twitter'
                 ? 'X (Twitter)'
+                : socialPlatform === 'custom'
+                ? 'Visit Portfolio'
                 : socialPlatform}
             </span>
             <ExternalLink className="h-3 w-3 text-neutral-400" />
@@ -235,7 +237,7 @@ export const PhotographerCreditBanner: React.FC<PhotographerCreditBannerProps> =
         )}
 
         {/* Custom URL Link Button */}
-        {hasCustomUrl && resolvedCustomUrl && (
+        {hasCustomUrl && resolvedCustomUrl && !hasPrimarySocial && (
           <a
             href={resolvedCustomUrl}
             target="_blank"
@@ -243,7 +245,7 @@ export const PhotographerCreditBanner: React.FC<PhotographerCreditBannerProps> =
             className="inline-flex items-center space-x-1.5 rounded-xl border border-[#D4AF37]/50 bg-white px-3.5 py-2 text-xs font-semibold text-neutral-800 shadow-xs hover:bg-[#FAF8F2] hover:border-[#D4AF37] transition-all active:scale-98"
           >
             <Globe className="h-3.5 w-3.5 text-[#997A15]" />
-            <span>কাস্টম পোর্টফোলিও (Custom URL)</span>
+            <span>Custom Portfolio</span>
             <ExternalLink className="h-3 w-3 text-neutral-400" />
           </a>
         )}

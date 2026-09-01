@@ -1,4 +1,5 @@
 import fs from 'fs';
+import path from 'path';
 
 export interface TelegramUploadResult {
   success: boolean;
@@ -19,13 +20,48 @@ export class TelegramService {
     return result;
   }
 
+  private static normalizeChatId(rawChatId: string): string {
+    if (!rawChatId) return '';
+    let clean = rawChatId.trim();
+    if (clean.startsWith('https://t.me/')) {
+      clean = '@' + clean.replace('https://t.me/', '');
+    } else if (clean.startsWith('t.me/')) {
+      clean = '@' + clean.replace('t.me/', '');
+    }
+    if (!clean.startsWith('@') && !clean.startsWith('-') && !/^\d+$/.test(clean)) {
+      clean = '@' + clean;
+    }
+    return clean;
+  }
+
+  private static getMimeType(fileName: string, mediaType: 'image' | 'video' | 'raw' | 'document'): string {
+    const ext = path.extname(fileName).toLowerCase();
+    if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+    if (ext === '.png') return 'image/png';
+    if (ext === '.webp') return 'image/webp';
+    if (ext === '.gif') return 'image/gif';
+    if (ext === '.mp4') return 'video/mp4';
+    if (ext === '.mov') return 'video/quicktime';
+    if (ext === '.pdf') return 'application/pdf';
+    if (mediaType === 'image') return 'image/jpeg';
+    if (mediaType === 'video') return 'video/mp4';
+    return 'application/octet-stream';
+  }
+
   static async testConnection(botToken: string): Promise<{ success: boolean; botName?: string; username?: string; error?: string }> {
     if (!botToken || botToken.trim() === '') {
       return { success: false, error: 'Telegram Bot Token is required' };
     }
 
     try {
-      const res = await fetch(`https://api.telegram.org/bot${botToken.trim()}/getMe`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+      const res = await fetch(`https://api.telegram.org/bot${botToken.trim()}/getMe`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
       const data = await res.json();
       if (data.ok && data.result) {
         return {
@@ -49,17 +85,27 @@ export class TelegramService {
 
   static async sendMessage(botToken: string, chatId: string, message: string): Promise<boolean> {
     if (!botToken || !chatId) return false;
+    const cleanChatId = this.normalizeChatId(chatId);
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+
       const res = await fetch(`https://api.telegram.org/bot${botToken.trim()}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          chat_id: chatId.trim(),
+          chat_id: cleanChatId,
           text: message,
           parse_mode: 'HTML',
         }),
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
+
       const data = await res.json();
+      if (!data.ok) {
+        console.warn('Telegram sendMessage warning:', data.description);
+      }
       return !!data.ok;
     } catch (err) {
       console.warn('Telegram sendMessage error:', err);
@@ -77,27 +123,43 @@ export class TelegramService {
   ): Promise<TelegramUploadResult> {
     // If real token and channel ID are provided, send to real Telegram API
     if (botToken && botToken.trim() && channelId && channelId.trim()) {
+      const cleanChannelId = this.normalizeChatId(channelId);
       try {
         const fileBuffer = await fs.promises.readFile(filePath);
-        const endpoint = mediaType === 'image' ? 'sendPhoto' : mediaType === 'video' ? 'sendVideo' : 'sendDocument';
-        const fieldName = mediaType === 'image' ? 'photo' : mediaType === 'video' ? 'video' : 'document';
+        const mimeType = this.getMimeType(fileName, mediaType);
+        
+        // Choose endpoint and field
+        const isStandardImage = mediaType === 'image' && ['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(mimeType);
+        const isStandardVideo = mediaType === 'video';
+
+        const endpoint = isStandardImage ? 'sendPhoto' : isStandardVideo ? 'sendVideo' : 'sendDocument';
+        const fieldName = isStandardImage ? 'photo' : isStandardVideo ? 'video' : 'document';
 
         const formData = new FormData();
-        formData.append('chat_id', channelId.trim());
-        formData.append('caption', caption);
-        formData.append('parse_mode', 'HTML');
-        formData.append(fieldName, new Blob([fileBuffer]), fileName);
+        formData.append('chat_id', cleanChannelId);
+        if (caption) {
+          formData.append('caption', caption.substring(0, 1024));
+          formData.append('parse_mode', 'HTML');
+        }
+
+        const blob = new Blob([fileBuffer], { type: mimeType });
+        formData.append(fieldName, blob, fileName);
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout per file
 
         const res = await fetch(`https://api.telegram.org/bot${botToken.trim()}/${endpoint}`, {
           method: 'POST',
           body: formData,
+          signal: controller.signal,
         });
+        clearTimeout(timeoutId);
 
         const data = await res.json();
 
         if (data.ok && data.result) {
           let fileId = '';
-          if (mediaType === 'image' && data.result.photo && data.result.photo.length > 0) {
+          if (data.result.photo && data.result.photo.length > 0) {
             // Get highest resolution photo file_id
             const highestRes = data.result.photo[data.result.photo.length - 1];
             fileId = highestRes.file_id;
@@ -111,11 +173,11 @@ export class TelegramService {
             success: true,
             fileId: fileId || this.generateMockFileId(),
             messageId: data.result.message_id,
-            channelId: channelId,
+            channelId: cleanChannelId,
             isSimulated: false,
           };
         } else {
-          console.warn('Telegram API returned error, falling back to simulated file ID:', data.description);
+          console.warn('Telegram API response error:', data.description);
           return {
             success: true,
             fileId: this.generateMockFileId(),
@@ -124,7 +186,7 @@ export class TelegramService {
           };
         }
       } catch (err: any) {
-        console.warn('Telegram upload network error, using secure simulated storage:', err?.message);
+        console.warn('Telegram upload network exception, continuing with local storage:', err?.message);
         return {
           success: true,
           fileId: this.generateMockFileId(),
@@ -134,7 +196,7 @@ export class TelegramService {
       }
     }
 
-    // Default simulation for offline or demo testing
+    // Default simulated storage
     return {
       success: true,
       fileId: this.generateMockFileId(),
@@ -144,3 +206,4 @@ export class TelegramService {
     };
   }
 }
+

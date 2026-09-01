@@ -72,7 +72,11 @@ export const GalleryViewer: React.FC<GalleryViewerProps> = ({
       });
 
       if (response.success && response.data?.media) {
-        setMediaList(response.data.media);
+        const serverMedia = response.data.media;
+        const localMedia = LocalVaultStore.getMedia().filter(m => m.folderId === folder.id);
+        const serverIds = new Set(serverMedia.map(m => m.id));
+        const combined = [...serverMedia, ...localMedia.filter(m => !serverIds.has(m.id))];
+        setMediaList(combined);
       } else if (response.status === 401 || response.status === 403) {
         setError(response.error || response.data?.error || 'Access restricted. Please unlock this vault.');
       } else {
