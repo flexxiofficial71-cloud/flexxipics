@@ -178,7 +178,11 @@ export function App() {
   // Toggle favorite photo
   const handleToggleFavorite = async (mediaId: string) => {
     try {
-      await fetch(`/api/media/${mediaId}/favorite`, { method: 'POST' });
+      await safeFetchJson(`/api/media/${mediaId}/favorite`, { method: 'POST' });
+      const currentMedia = LocalVaultStore.getMedia().map(m =>
+        m.id === mediaId ? { ...m, clientFavorited: !m.clientFavorited, clientLikes: (m.clientLikes || 0) + (m.clientFavorited ? -1 : 1) } : m
+      );
+      LocalVaultStore.saveMedia(currentMedia);
     } catch (err) {
       console.error('Failed to toggle favorite:', err);
     }
@@ -187,7 +191,11 @@ export function App() {
   // Toggle select photo
   const handleToggleSelect = async (mediaId: string) => {
     try {
-      await fetch(`/api/media/${mediaId}/select`, { method: 'POST' });
+      await safeFetchJson(`/api/media/${mediaId}/select`, { method: 'POST' });
+      const currentMedia = LocalVaultStore.getMedia().map(m =>
+        m.id === mediaId ? { ...m, clientSelected: !m.clientSelected } : m
+      );
+      LocalVaultStore.saveMedia(currentMedia);
     } catch (err) {
       console.error('Failed to toggle select:', err);
     }

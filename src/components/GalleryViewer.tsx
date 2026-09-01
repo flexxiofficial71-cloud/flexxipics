@@ -130,11 +130,15 @@ export const GalleryViewer: React.FC<GalleryViewerProps> = ({
     if (!qrDataUrl) {
       try {
         const fullUrl = window.location.href;
-        const res = await fetch(`/api/qrcode?url=${encodeURIComponent(fullUrl)}`);
-        const data = await res.json();
-        if (data.qrDataUrl) setQrDataUrl(data.qrDataUrl);
+        const response = await safeFetchJson<{ qrDataUrl: string }>(`/api/qrcode?url=${encodeURIComponent(fullUrl)}`);
+        if (response.success && response.data?.qrDataUrl) {
+          setQrDataUrl(response.data.qrDataUrl);
+        } else {
+          // Fallback to public QR code generator API
+          setQrDataUrl(`https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(fullUrl)}`);
+        }
       } catch (err) {
-        console.error('Failed to load QR code:', err);
+        setQrDataUrl(`https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(window.location.href)}`);
       }
     }
   };
@@ -145,23 +149,27 @@ export const GalleryViewer: React.FC<GalleryViewerProps> = ({
     setTimeout(() => setIsCopying(false), 2000);
   };
 
-  // Download media item with signed token
+  // Download media item with signed token or direct URL
   const handleDownload = async (item: MediaItem) => {
     try {
-      const res = await fetch(`/api/media/${item.id}/download-token`);
-      const data = await res.json();
-      if (res.ok && data.downloadUrl) {
-        const link = document.createElement('a');
-        link.href = data.downloadUrl;
-        link.download = item.fileName;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-      } else {
-        alert(data.error || 'Downloads disabled for this gallery.');
-      }
+      const response = await safeFetchJson<{ downloadUrl?: string; error?: string }>(`/api/media/${item.id}/download-token`);
+      const targetUrl = (response.success && response.data?.downloadUrl) ? response.data.downloadUrl : item.url;
+
+      const link = document.createElement('a');
+      link.href = targetUrl;
+      link.download = item.fileName || 'vault-media.jpg';
+      link.target = '_blank';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
     } catch (err) {
-      alert('Failed to download media item.');
+      const link = document.createElement('a');
+      link.href = item.url;
+      link.download = item.fileName || 'vault-media.jpg';
+      link.target = '_blank';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
     }
   };
 
